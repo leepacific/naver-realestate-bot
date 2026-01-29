@@ -1,7 +1,7 @@
 {
   "name": "naver-realestate-bot",
   "version": "1.0.0",
-  "description": "Naver Real Estate search bot with Playwright",
+  "description": "Naver Real Estate search bot",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
@@ -9,7 +9,6 @@
     "dev": "ts-node src/index.ts"
   },
   "dependencies": {
-    "playwright": "^1.40.0",
     "telegraf": "^4.15.0",
     "express": "^4.18.2"
   },
