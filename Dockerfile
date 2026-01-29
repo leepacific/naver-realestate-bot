@@ -1,11 +1,39 @@
-# Playwright 공식 이미지 사용 (Chromium 포함)
-FROM mcr.microsoft.com/playwright:v1.40.0-jammy
+FROM node:20-slim
+
+# Playwright 의존성 설치
+RUN apt-get update && apt-get install -y \
+    wget \
+    gnupg \
+    ca-certificates \
+    fonts-liberation \
+    libasound2 \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    libcups2 \
+    libdbus-1-3 \
+    libdrm2 \
+    libgbm1 \
+    libgtk-3-0 \
+    libnspr4 \
+    libnss3 \
+    libx11-xcb1 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libxss1 \
+    xdg-utils \
+    --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # package.json 복사 및 의존성 설치
 COPY package*.json ./
 RUN npm install
+
+# Playwright 브라우저 설치
+RUN npx playwright install chromium
 
 # 소스 복사 및 빌드
 COPY . .
