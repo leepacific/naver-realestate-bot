@@ -34,29 +34,25 @@ bot.command('start', (ctx) => {
   ctx.reply(`🏠 네이버 부동산 검색 봇
 
 사용법:
-/search [지역] - 매물 검색
 /hangang - 한강 주변 원룸/투룸 검색
 
-예시:
-/search 용산구 마포구
-/hangang
-
-옵션:
-- 기본: 원룸/투룸/오피스텔, 8-12평, 2층 이상
-- 월세/전세 모두 포함`);
+검색 조건:
+- 원룸/투룸/오피스텔
+- 8-13평 (26-43㎡)
+- 2층 이상
+- 월세/전세 모두`);
 });
 
 // /hangang 명령어 - 한강 주변 검색
 bot.command('hangang', async (ctx) => {
   if (!isAllowed(ctx.from.id)) return;
   
-  const statusMsg = await ctx.reply('🔍 한강 주변 매물 검색 중... (1-2분 소요)');
+  const statusMsg = await ctx.reply('🔍 한강 주변 매물 검색 중... (30초-1분 소요)');
   
   try {
     await scraper.init();
     
     const options: SearchOptions = {
-      areas: ['용산구', '마포구', '성동구', '광진구', '영등포구'],
       minSize: 26,   // 약 8평
       maxSize: 43,   // 약 13평
       minFloor: 2,
@@ -71,7 +67,7 @@ bot.command('hangang', async (ctx) => {
         ctx.chat.id,
         statusMsg.message_id,
         undefined,
-        '😅 조건에 맞는 매물을 찾지 못했어요.'
+        '😅 조건에 맞는 매물을 찾지 못했어요. 잠시 후 다시 시도해주세요.'
       );
       return;
     }
@@ -81,9 +77,12 @@ bot.command('hangang', async (ctx) => {
     
     for (let i = 0; i < results.length; i++) {
       const p = results[i];
-      response += `${i + 1}. ${p.title || '매물'}\n`;
+      response += `${i + 1}. ${p.title}\n`;
       response += `   💰 ${p.price}\n`;
-      response += `   📐 ${p.size}㎡ | ${p.floor}\n`;
+      if (p.size) response += `   📐 ${p.size}`;
+      if (p.floor) response += ` | ${p.floor}`;
+      response += '\n';
+      if (p.description) response += `   ${p.description}\n`;
       if (p.link) response += `   🔗 ${p.link}\n`;
       response += '\n';
     }
@@ -96,84 +95,9 @@ bot.command('hangang', async (ctx) => {
         undefined,
         response.slice(0, 4000) + '...'
       );
-      await ctx.reply(response.slice(4000));
-    } else {
-      await ctx.telegram.editMessageText(
-        ctx.chat.id,
-        statusMsg.message_id,
-        undefined,
-        response
-      );
-    }
-  } catch (error) {
-    console.error('Search error:', error);
-    await ctx.telegram.editMessageText(
-      ctx.chat.id,
-      statusMsg.message_id,
-      undefined,
-      `❌ 검색 중 오류 발생: ${error instanceof Error ? error.message : '알 수 없는 오류'}`
-    );
-  } finally {
-    await scraper.close();
-  }
-});
-
-// /search 명령어 - 커스텀 지역 검색
-bot.command('search', async (ctx) => {
-  if (!isAllowed(ctx.from.id)) return;
-  
-  const args = ctx.message.text.split(' ').slice(1);
-  
-  if (args.length === 0) {
-    ctx.reply('사용법: /search [지역1] [지역2] ...\n예시: /search 용산구 마포구');
-    return;
-  }
-
-  const statusMsg = await ctx.reply(`🔍 ${args.join(', ')} 매물 검색 중... (1-2분 소요)`);
-  
-  try {
-    await scraper.init();
-    
-    const options: SearchOptions = {
-      areas: args,
-      minSize: 26,
-      maxSize: 43,
-      minFloor: 2,
-      tradeType: 'all',
-      limit: 20
-    };
-    
-    const results = await scraper.search(options);
-    
-    if (results.length === 0) {
-      await ctx.telegram.editMessageText(
-        ctx.chat.id,
-        statusMsg.message_id,
-        undefined,
-        '😅 조건에 맞는 매물을 찾지 못했어요.'
-      );
-      return;
-    }
-
-    let response = `🏠 ${args.join(', ')} 매물 ${results.length}건\n\n`;
-    
-    for (let i = 0; i < results.length; i++) {
-      const p = results[i];
-      response += `${i + 1}. ${p.title || '매물'}\n`;
-      response += `   💰 ${p.price}\n`;
-      response += `   📐 ${p.size}㎡ | ${p.floor}\n`;
-      if (p.link) response += `   🔗 ${p.link}\n`;
-      response += '\n';
-    }
-
-    if (response.length > 4000) {
-      await ctx.telegram.editMessageText(
-        ctx.chat.id,
-        statusMsg.message_id,
-        undefined,
-        response.slice(0, 4000) + '...'
-      );
-      await ctx.reply(response.slice(4000));
+      if (response.length > 4000) {
+        await ctx.reply(response.slice(4000, 8000));
+      }
     } else {
       await ctx.telegram.editMessageText(
         ctx.chat.id,
@@ -215,7 +139,6 @@ async function main() {
     await bot.telegram.setWebhook(webhookUrl);
     console.log(`✅ Webhook set to ${webhookUrl}`);
   } else {
-    // Polling 모드 (개발용)
     bot.launch();
     console.log('✅ Bot started in polling mode');
   }
@@ -223,6 +146,5 @@ async function main() {
 
 main().catch(console.error);
 
-// Graceful shutdown
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));

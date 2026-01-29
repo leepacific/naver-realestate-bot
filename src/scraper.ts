@@ -1,4 +1,4 @@
-import { chromium, Browser, Page } from 'playwright';
+import { chromium, Browser, BrowserContext } from 'playwright';
 
 export interface Property {
   id: string;
@@ -12,7 +12,6 @@ export interface Property {
 }
 
 export interface SearchOptions {
-  areas: string[];
   minSize?: number;
   maxSize?: number;
   minFloor?: number;
@@ -20,14 +19,14 @@ export interface SearchOptions {
   limit?: number;
 }
 
-const AREA_CODES: Record<string, string> = {
-  '용산구': '1117000000',
-  '마포구': '1144000000', 
-  '성동구': '1120000000',
-  '광진구': '1121500000',
-  '영등포구': '1156000000',
-  '강남구': '1168000000',
-  '서초구': '1165000000',
+// 한강 주변 좌표 (서울 중심)
+const HANGANG_BOUNDS = {
+  lat: 37.5326,
+  lon: 126.9903,
+  btm: 37.4850,
+  lft: 126.9010,
+  top: 37.5803,
+  rgt: 127.0797
 };
 
 export class NaverRealEstateScraper {
@@ -52,21 +51,38 @@ export class NaverRealEstateScraper {
       await this.init();
     }
 
+    const context = await this.browser!.newContext({
+      userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
+    });
+
     const results: Property[] = [];
 
-    for (const area of options.areas) {
-      try {
-        console.log(`Searching ${area}...`);
-        const areaResults = await this.searchAreaMobile(area, options);
-        console.log(`Found ${areaResults.length} results in ${area}`);
-        results.push(...areaResults);
-        
-        if (options.limit && results.length >= options.limit) {
-          break;
+    try {
+      // Step 1: 클러스터 목록 가져오기
+      const clusters = await this.fetchClusters(context, options);
+      console.log(`Found ${clusters.length} clusters`);
+
+      // Step 2: 각 클러스터에서 매물 가져오기
+      for (const cluster of clusters.slice(0, 5)) { // 상위 5개 클러스터만
+        try {
+          const articles = await this.fetchArticlesFromCluster(context, cluster.lgeo, options);
+          console.log(`Cluster ${cluster.lgeo}: ${articles.length} articles`);
+          results.push(...articles);
+
+          if (options.limit && results.length >= options.limit) {
+            break;
+          }
+
+          // Rate limit 방지
+          await new Promise(r => setTimeout(r, 500));
+        } catch (e) {
+          console.error(`Error fetching cluster ${cluster.lgeo}:`, e);
         }
-      } catch (error) {
-        console.error(`Error searching ${area}:`, error);
       }
+    } catch (error) {
+      console.error('Search error:', error);
+    } finally {
+      await context.close();
     }
 
     // 층수 필터링
@@ -86,118 +102,101 @@ export class NaverRealEstateScraper {
     return filtered.slice(0, options.limit || 20);
   }
 
-  private async searchAreaMobile(area: string, options: SearchOptions): Promise<Property[]> {
-    const results: Property[] = [];
-    const context = await this.browser!.newContext({
-      userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
-      viewport: { width: 390, height: 844 },
-      deviceScaleFactor: 3,
-    });
-    
+  private async fetchClusters(context: BrowserContext, options: SearchOptions): Promise<any[]> {
     const page = await context.newPage();
     
     try {
-      const cortarNo = AREA_CODES[area];
-      if (!cortarNo) {
-        console.log(`Unknown area code for: ${area}`);
-        return [];
-      }
-
-      // 모바일 버전 URL
       const tradeType = options.tradeType === 'rent' ? 'B2' : 
                         options.tradeType === 'jeonse' ? 'B1' : 'B1:B2';
+
+      const url = `https://m.land.naver.com/cluster/clusterList?view=atcl&rletTpCd=VL:OPST&tradTpCd=${tradeType}&z=13&lat=${HANGANG_BOUNDS.lat}&lon=${HANGANG_BOUNDS.lon}&btm=${HANGANG_BOUNDS.btm}&lft=${HANGANG_BOUNDS.lft}&top=${HANGANG_BOUNDS.top}&rgt=${HANGANG_BOUNDS.rgt}`;
+
+      console.log(`Fetching clusters: ${url}`);
       
-      const url = `https://m.land.naver.com/cluster/ajax/articleList?rletTpCd=OR:VL:OPST&tradTpCd=${tradeType}&z=13&cortarNo=${cortarNo}&page=1`;
-      
-      console.log(`Fetching: ${url}`);
-      
-      // API 직접 호출
-      const response = await page.goto(url, { 
-        waitUntil: 'commit',
-        timeout: 15000 
-      });
+      const response = await page.goto(url, { waitUntil: 'commit', timeout: 15000 });
       
       if (response) {
         const text = await response.text();
-        console.log(`Response length: ${text.length}`);
+        const data = JSON.parse(text);
         
-        try {
-          const data = JSON.parse(text);
-          
-          if (data.body && Array.isArray(data.body)) {
-            console.log(`Found ${data.body.length} items in API response`);
-            
-            for (const item of data.body) {
-              const property: Property = {
-                id: item.atclNo || String(Math.random()),
-                title: item.atclNm || '매물',
-                price: this.formatPrice(item.prcInfo || item.hanPrc || ''),
-                size: item.spc2 ? `${item.spc2}㎡` : '',
-                floor: item.flrInfo || '',
-                address: item.atclFetrDesc || '',
-                description: [item.rletTpNm, item.tradTpNm].filter(Boolean).join(' / '),
-                link: `https://m.land.naver.com/article/info/${item.atclNo}`
-              };
-              results.push(property);
-            }
-          } else {
-            console.log('No body in response:', JSON.stringify(data).slice(0, 200));
-          }
-        } catch (e) {
-          console.error('Failed to parse response:', text.slice(0, 500));
+        if (data.code === 'success' && data.data?.ARTICLE) {
+          // count가 많은 순으로 정렬
+          return data.data.ARTICLE.sort((a: any, b: any) => b.count - a.count);
         }
       }
-
-      // API가 안되면 페이지 스크래핑 시도
-      if (results.length === 0) {
-        console.log('API failed, trying page scraping...');
-        const pageUrl = `https://m.land.naver.com/cluster/clusterList?view=atcl&rletTpCd=OR:VL:OPST&tradTpCd=${tradeType}&z=13&cortarNo=${cortarNo}`;
-        
-        await page.goto(pageUrl, { waitUntil: 'networkidle', timeout: 20000 });
-        await page.waitForTimeout(2000);
-        
-        // 매물 리스트 찾기
-        const items = await page.$$('.item_inner, .article_item, [class*="item"]');
-        console.log(`Found ${items.length} DOM items`);
-        
-        for (const item of items.slice(0, 30)) {
-          try {
-            const title = await item.$eval('.item_title, .name, [class*="title"]', 
-              el => el.textContent?.trim() || '').catch(() => '매물');
-            const price = await item.$eval('.price, .item_price, [class*="price"]', 
-              el => el.textContent?.trim() || '').catch(() => '');
-            const info = await item.$eval('.info, .item_info, [class*="info"]', 
-              el => el.textContent?.trim() || '').catch(() => '');
-            
-            if (title || price) {
-              results.push({
-                id: String(Math.random()),
-                title,
-                price,
-                size: '',
-                floor: '',
-                address: '',
-                description: info,
-                link: ''
-              });
-            }
-          } catch (e) {
-            // ignore
-          }
-        }
-      }
-
-    } catch (error) {
-      console.error(`Error in searchAreaMobile:`, error);
+    } catch (e) {
+      console.error('Failed to fetch clusters:', e);
     } finally {
-      await context.close();
+      await page.close();
+    }
+
+    return [];
+  }
+
+  private async fetchArticlesFromCluster(context: BrowserContext, lgeo: string, options: SearchOptions): Promise<Property[]> {
+    const page = await context.newPage();
+    const results: Property[] = [];
+
+    try {
+      const tradeType = options.tradeType === 'rent' ? 'B2' : 
+                        options.tradeType === 'jeonse' ? 'B1' : 'B1:B2';
+
+      const url = `https://m.land.naver.com/cluster/ajax/articleList?rletTpCd=VL:OPST&tradTpCd=${tradeType}&z=13&lgeo=${lgeo}&page=1`;
+
+      console.log(`Fetching articles from lgeo ${lgeo}`);
+      
+      const response = await page.goto(url, { waitUntil: 'commit', timeout: 15000 });
+      
+      if (response) {
+        const text = await response.text();
+        console.log(`Response for lgeo ${lgeo}: ${text.length} bytes`);
+        
+        const data = JSON.parse(text);
+        
+        if (data.code === 'success' && data.body && Array.isArray(data.body)) {
+          for (const item of data.body) {
+            // 면적 필터
+            const size = parseFloat(item.spc2 || '0');
+            if (options.minSize && size < options.minSize) continue;
+            if (options.maxSize && size > options.maxSize) continue;
+
+            const property: Property = {
+              id: item.atclNo || String(Math.random()),
+              title: item.atclNm || '매물',
+              price: this.formatPrice(item),
+              size: item.spc2 ? `${item.spc2}㎡` : '',
+              floor: item.flrInfo || '',
+              address: item.atclFetrDesc || item.sameAddrCnt ? `동일주소 ${item.sameAddrCnt}개` : '',
+              description: [item.rletTpNm, item.tradTpNm, item.direction].filter(Boolean).join(' · '),
+              link: `https://m.land.naver.com/article/info/${item.atclNo}`
+            };
+            results.push(property);
+          }
+        }
+      }
+    } catch (e) {
+      console.error(`Failed to fetch articles for lgeo ${lgeo}:`, e);
+    } finally {
+      await page.close();
     }
 
     return results;
   }
 
-  private formatPrice(price: string): string {
-    if (!price) return '';
-    return price.replace(/\s+/g, ' ').trim();
+  private formatPrice(item: any): string {
+    const parts: string[] = [];
+    
+    if (item.hanPrc) {
+      parts.push(item.hanPrc);
+    }
+    
+    if (item.rentPrc && item.rentPrc !== '0') {
+      if (parts.length > 0) {
+        return `${parts[0]}/${item.rentPrc}`;
+      }
+      parts.push(item.rentPrc);
+    }
+    
+    return parts.join(' ') || item.prcInfo || '';
   }
 }
