@@ -18,6 +18,8 @@ export interface SearchOptions {
   minFloor?: number;
   tradeType?: 'rent' | 'jeonse' | 'all';
   limit?: number;
+  maxDeposit?: number;  // 만원 단위
+  maxRent?: number;     // 만원 단위
 }
 
 const HANGANG_BOUNDS = {
@@ -158,6 +160,13 @@ export class NaverRealEstateScraper {
         const size = parseFloat(item.spc2 || '0');
         if (options.minSize && size < options.minSize) continue;
         if (options.maxSize && size > options.maxSize) continue;
+
+        // 가격 필터 (prc는 만원 단위)
+        const deposit = item.prc || 0;
+        const rent = item.rentPrc || 0;
+        
+        if (options.maxDeposit && deposit > options.maxDeposit) continue;
+        if (options.maxRent && rent > options.maxRent) continue;
 
         const property: Property = {
           id: item.atclNo || String(Math.random()),
